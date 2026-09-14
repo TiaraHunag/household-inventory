@@ -149,14 +149,14 @@ Error generating stack: `+n.message+`
 .icon-btn.accent { background: var(--accent-2); color: white; flex-shrink: 0; }
 .card-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
-.edit-grid { display: flex; flex-direction: column; gap: 10px; }
-.edit-row { display: flex; gap: 6px; align-items: flex-end; }
-.field-col { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.edit-grid { display: flex; flex-direction: column; gap: 14px; }
+.edit-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.field-col { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 108px; }
 .field-label { font-size: 11px; color: var(--ink-soft); font-weight: 700; letter-spacing: 0.5px; }
 .field-hint { font-size: 11px; color: var(--ink-soft); line-height: 1.5; margin-top: -4px; }
 .section-divider {
-  font-size: 11px; font-weight: 700; color: var(--accent-2); text-transform: uppercase; letter-spacing: 1px;
-  border-top: 1px dashed var(--line); padding-top: 10px; margin-top: 2px;
+  font-size: 12px; font-weight: 700; color: var(--accent-2); text-transform: uppercase; letter-spacing: 1px;
+  border-top: 1px dashed var(--line); padding-top: 14px; margin-top: 4px;
 }
 .field {
   border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; font-size: 16px;
@@ -226,10 +226,19 @@ Error generating stack: `+n.message+`
 .fab.ghost-fab { background: var(--surface); color: var(--ink); border: 1px solid var(--line); }
 .add-panel {
   position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 2px solid var(--ink);
-  padding: 16px; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 24px rgba(0,0,0,0.15);
-  max-height: 75vh; overflow-y: auto;
+  padding: 20px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-radius: 16px 16px 0 0; box-shadow: 0 -8px 24px rgba(0,0,0,0.15);
+  max-height: 85vh; overflow-y: auto;
 }
-.add-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.add-panel::before {
+  content: ""; display: block; width: 36px; height: 4px; border-radius: 100px;
+  background: var(--line); margin: 0 auto 14px;
+}
+.add-actions {
+  display: flex; gap: 8px; margin-top: 14px; position: sticky; bottom: 0;
+  background: var(--surface); padding: 10px 0 2px; border-top: 1px solid var(--line);
+}
+.add-actions .btn { flex: 1; }
 .btn { border-radius: 100px; padding: 11px 20px; min-height: 42px; font-size: 14px; font-weight: 700; border: none; cursor: pointer; }
 .btn.ghost { background: var(--bg); color: var(--ink-soft); }
 .btn.accent { background: var(--accent); color: white; }
