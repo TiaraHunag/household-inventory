@@ -258,18 +258,32 @@ function load(){
   })
   .finally(function(){ loading=false; render(); });
 }
+// catsDirtyVersion / catsSyncedVersion：只有分類架構真的變動過，存檔才會夾帶 categories，
+// 減少後端不必要的整表重寫。用版本號（而非單純布林值）是為了避免「這次存檔還在飛的時候
+// 使用者又改了一次分類」造成漏送：只有當這次送出的版本號真的被伺服器成功收下，才會前進
+// catsSyncedVersion；送失敗的話版本號不會更新，下一次任何操作觸發的存檔會自動把分類補送一次。
+var catsDirtyVersion=0, catsSyncedVersion=0;
+function touchCats(){ catsDirtyVersion++; }
 function save(){
   if(S.status!=="ready" || !S.url || !S.pw || S.items===null) return;
-  pending={ items:S.items, categories:catsToRows(S.cats) };
+  var includeCats = catsDirtyVersion!==catsSyncedVersion;
+  var body={ items:S.items };
+  if(includeCats) body.categories=catsToRows(S.cats);
+  pending={ body:body, includeCats:includeCats, version:catsDirtyVersion };
   flush();
 }
 function flush(){
   if(saving || pending===null) return;
-  var body=pending; pending=null; saving=true;
+  var job=pending; pending=null; saving=true;
+  var payload={ items:job.body.items, token:S.pw };
+  if(job.includeCats) payload.categories=job.body.categories;
   fetch(S.url,{ method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body: JSON.stringify({ items:body.items, categories:body.categories, token:S.pw }) })
+    body: JSON.stringify(payload) })
   .then(function(r){ if(!r.ok) throw new Error("save"); return r.json(); })
-  .then(function(j){ if(j && j.ok===false){ var e=new Error(j.error||"save"); e.code=j.error; throw e; } })
+  .then(function(j){
+    if(j && j.ok===false){ var e=new Error(j.error||"save"); e.code=j.error; throw e; }
+    if(job.includeCats) catsSyncedVersion=job.version;
+  })
   .catch(function(e){
     if(e && e.code==="unauthorized"){ try{ localStorage.removeItem("accessPassword"); }catch(x){} S.pw=""; S.status="auth"; render(); }
     else toast("同步失敗，稍後會再試");
@@ -701,7 +715,7 @@ var A = {
     var it={ id:uid(), name:(f.name||"").trim(), brand:(f.brand||"").trim(), category:f.category, category2:f.category2||"",
       unit:f.unit||"個", threshold:Math.max(0, Math.round(num(f.threshold))), barcode:(f.barcode||"").trim(), transactions:tx };
     S.items=(S.items||[]).concat([it]);
-    if(!S.cats[it.category]) S.cats[it.category]=[];
+    if(!S.cats[it.category]) { S.cats[it.category]=[]; touchCats(); }
     S.add=null; save(); toast("已新增 "+it.name); render();
   },
   addCat1:function(el){ S.add.form.category=el.getAttribute("data-v"); S.add.form.category2=""; render(); },
@@ -757,7 +771,7 @@ var A = {
     var v=prompt("新增分類名稱："); if(!v||!v.trim()) return;
     v=v.trim(); if(!S.cats[v]) S.cats[v]=[];
     if(S.add) S.add.form.category=v;
-    save(); render();
+    touchCats(); save(); render();
   },
   renameCat:function(el){
     var c=el.getAttribute("data-v"), v=prompt("重新命名為：", c); if(!v||!v.trim()||v.trim()===c) return;
@@ -766,20 +780,20 @@ var A = {
     S.cats[v]=Array.from(new Set((S.cats[v]||[]).concat(subs)));
     S.items=(S.items||[]).map(function(i){ return i.category===c ? Object.assign({},i,{category:v}) : i; });
     if(S.cat===c) S.cat=v;
-    save(); render();
+    touchCats(); save(); render();
   },
   delCat:function(el){
     var c=el.getAttribute("data-v");
     if(!confirm("刪除分類「"+c+"」？（已使用這個分類的品項資料不受影響）")) return;
-    delete S.cats[c]; if(S.cat===c) S.cat="全部"; save(); render();
+    delete S.cats[c]; if(S.cat===c) S.cat="全部"; touchCats(); save(); render();
   },
   addCat2:function(el){
     var c=el.getAttribute("data-v"), v=prompt("在「"+c+"」底下新增子分類："); if(!v||!v.trim()) return;
-    S.cats[c]=Array.from(new Set((S.cats[c]||[]).concat([v.trim()]))); save(); render();
+    S.cats[c]=Array.from(new Set((S.cats[c]||[]).concat([v.trim()]))); touchCats(); save(); render();
   },
   delCat2:function(el){
     var c=el.getAttribute("data-v"), s=el.getAttribute("data-v2");
-    S.cats[c]=(S.cats[c]||[]).filter(function(x){ return x!==s; }); save(); render();
+    S.cats[c]=(S.cats[c]||[]).filter(function(x){ return x!==s; }); touchCats(); save(); render();
   }
 };
 function act(name, el){ if(A[name]) A[name](el||document.createElement("div")); }
