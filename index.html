@@ -282,8 +282,11 @@ function sync(){ flush(); }
 function load(){
   if(loading || !S.url || !S.pw) return;
   loading=true; S.status="loading"; render();
-  var u=new URL(S.url); u.searchParams.set("token", S.pw||"");
-  fetch(u.toString()).then(function(r){ if(!r.ok) throw new Error("load"); return r.json(); })
+  // 改用 POST、把 token 放進 body（跟存檔用同一種方式），不要再把密碼放進網址查詢字串——
+  // 網址會被瀏覽器紀錄、DevTools Network 面板、甚至分享畫面截圖時外洩，body 內容不會。
+  fetch(S.url,{ method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body: JSON.stringify({ action:"load", token:S.pw }) })
+  .then(function(r){ if(!r.ok) throw new Error("load"); return r.json(); })
   .then(function(j){
     if(j && j.ok===false) { var e=new Error(j.error||"load"); e.code=j.error; throw e; }
     S.items=(Array.isArray(j.items)?j.items:[]).map(upgrade);
