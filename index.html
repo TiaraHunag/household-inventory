@@ -173,6 +173,8 @@ function fmtD(iso){ var d=new Date(iso); if(isNaN(d)) return ""; var w="日一�
 function fmtShort(iso){ var d=new Date(iso); if(isNaN(d)) return "—"; return (d.getMonth()+1)+"/"+d.getDate(); }
 function lastIn(it){ return (it.transactions||[]).slice().filter(function(t){return t.type==="in";})
   .sort(function(a,b){return new Date(b.date)-new Date(a.date);})[0]; }
+function lastOut(it){ return (it.transactions||[]).slice().filter(function(t){return t.type==="out";})
+  .sort(function(a,b){return new Date(b.date)-new Date(a.date);})[0]; }
 function usage(it){
   var outs=(it.transactions||[]).filter(function(t){return t.type==="out"&&t.date;})
     .sort(function(a,b){return new Date(a.date)-new Date(b.date);});
@@ -187,13 +189,26 @@ function usage(it){
   var left=Math.max(stock(it)-num(it.threshold)+1,0);
   return { per:per, left:Math.round(per*Math.max(stock(it),0)), predict:new Date(last.getTime()+per*left*DAY), n:outs.length };
 }
-// 依照 usage() 算出的平均消耗速度，從「現在」往後推算目前庫存大概還能撐幾天、
-// 大約哪一天會見底（u.left 已經是「per(每個所需天數) × 目前庫存」算出來的天數）。
+// 依照 usage() 算出的平均消耗速度（per：平均每 1 個能用幾天），從「最後一次記錄用掉」
+// 那天往後推算：手上還有幾個庫存（都還沒開始用）就再加幾個 per，最後 +1 個 per 是「當下
+// 正在用的這一個／剛用完準備要補的那一個」。這樣不管現在庫存是 0 還是還有幾個，都能推出
+// 一個預估見底日——即使庫存已經歸零、好一陣子沒再記錄，也是以「上次用掉」那天為起點往後推，
+// 而不是以「現在」往後推（現在往後推的話，如果好幾天沒開 App，估出來的天數會偏少）。
 // usage() 回傳 null（用量紀錄不足，少於 2 筆「使用」紀錄）時這裡也回傳 null。
 function restockAdvice(it){
-  var u=usage(it);
-  if(!u) return null;
-  return { days:u.left, eta:new Date(Date.now()+u.left*DAY) };
+  var u=usage(it); if(!u) return null;
+  var lo=lastOut(it); if(!lo) return null;
+  var units=Math.max(stock(it),0)+1;
+  var eta=new Date(new Date(lo.date).getTime()+u.per*units*DAY);
+  return { days:Math.round((eta.getTime()-Date.now())/DAY), eta:eta };
+}
+// 採購清單排序用：能算出預估見底日的，日期越近（或已經超過，days 是負的）排越前面；
+// 完全沒庫存但連預估都抓不出來的（用量紀錄不足），視為最緊急，排最前面；
+// 還有庫存、但抓不出用量的，排最後面（不確定，不能亂排在別人前面）。
+function restockSortKey(it){
+  var adv=restockAdvice(it);
+  if(adv) return adv.days;
+  return stock(it)<=0 ? -Infinity : Infinity;
 }
 function costStats(it){
   var ins=(it.transactions||[]).filter(function(t){return t.type==="in"&&num(t.price)>0;});
@@ -397,17 +412,21 @@ function stockScreen(){
   return h+'</div>';
 }
 function buyScreen(){
-  var low=(S.items||[]).filter(isLow);
+  var low=(S.items||[]).filter(isLow).slice().sort(function(a,b){ return restockSortKey(a)-restockSortKey(b); });
   var h='<div class="head"><div class="h1">採購清單</div>'+
     '<div style="font-size:13px;color:var(--soft);margin-top:2px">'+(low.length?"有 "+low.length+" 個品項低於警戒值":"全部庫存都在警戒值以上")+'</div></div><div class="scroll"><div class="list">';
   if(!low.length) return '<div class="head"><div class="h1">採購清單</div></div><div class="scroll"><div class="empty"><span class="num">0</span>目前沒有需要補貨的品項<br>庫存低於警戒值時會自動列在這裡</div></div>';
   low.forEach(function(it){
     var q=stock(it), sug=Math.max(1, num(it.threshold)*2-q), on=!!S.bought[it.id], li=lastIn(it);
     var adv=restockAdvice(it);
-    var advText = q<=0
-      ? "已經沒有庫存了，建議儘快補貨"
-      : (adv ? "以目前用量估計，約 "+adv.days+" 天後用完（約 "+fmtShort(adv.eta)+"）"
-             : "用量紀錄還不夠，暫時抓不出補貨時間");
+    var advText;
+    if(adv){
+      advText = adv.days>0
+        ? "以目前用量估計，約 "+adv.days+" 天後用完（約 "+fmtShort(adv.eta)+"）"
+        : "以目前用量估計，已超過預期用完時間（約 "+fmtShort(adv.eta)+"），建議儘快補貨";
+    } else {
+      advText = q<=0 ? "已經沒有庫存了，建議儘快補貨" : "用量紀錄還不夠，暫時抓不出補貨時間";
+    }
     h+='<div class="row low" style="align-items:flex-start">'+
       '<button class="mark'+(on?" on":"")+'" data-act="toggleBought" data-id="'+it.id+'">'+svg("check",17)+'</button>'+
       '<div style="flex:1;min-width:0">'+
