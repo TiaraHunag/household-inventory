@@ -235,12 +235,27 @@ var S = {
   buy:null, add:null, edit:null, txEdit:null,
   bought:{}, toast:"", catMgr:false
 };
-var saving=false, pending=null, loading=false, toastT=null;
+var syncing=false, loading=false, toastT=null;
 
 function toast(m){ S.toast=m; clearTimeout(toastT); toastT=setTimeout(function(){ S.toast=""; render(); },1900); render(); }
 function set(patch){ Object.keys(patch).forEach(function(k){ S[k]=patch[k]; }); render(); }
 
-/* ── network ───────────────────────────────────────── */
+/* ── network ───────────────────────────────────────────────────────
+ * 不再每次存檔都把整包 items 送到後端整表重寫，而是把每個操作記成一筆
+ * 「差異」（op），累積在 opsQueue 裡，flush() 時把目前排隊的 ops 一次送出，
+ * 後端只針對真正變動的那幾列做新增/更新/刪除。
+ * ------------------------------------------------------------------ */
+var opsQueue=[]; // 尚未成功同步到後端的差異
+
+// fullResync：目前這批 ops 尚未送出前，狀態已經被之後的完整快照涵蓋，之前排的都可以丟棄。
+// categoriesSet：分類架構的異動只保留「最新的一份完整快照」即可，不需要疊加多筆。
+function queueOp(op){
+  if(op.op==="fullResync"){ opsQueue=[op]; return; }
+  if(op.op==="categoriesSet"){ opsQueue=opsQueue.filter(function(o){ return o.op!=="categoriesSet"; }); }
+  opsQueue.push(op);
+}
+function sync(){ flush(); }
+
 function load(){
   if(loading || !S.url || !S.pw) return;
   loading=true; S.status="loading"; render();
@@ -251,6 +266,7 @@ function load(){
     S.items=(Array.isArray(j.items)?j.items:[]).map(upgrade);
     S.cats=rowsToCats(Array.isArray(j.categories)?j.categories:[]);
     S.status="ready";
+    opsQueue=[]; // 剛讀到伺服器最新狀態，沒有還沒送出的差異
   })
   .catch(function(e){
     if(e && e.code==="unauthorized"){ try{ localStorage.removeItem("accessPassword"); }catch(x){} S.pw=""; S.pwError=true; S.status="auth"; }
@@ -258,48 +274,37 @@ function load(){
   })
   .finally(function(){ loading=false; render(); });
 }
-// catsDirtyVersion / catsSyncedVersion：只有分類架構真的變動過，存檔才會夾帶 categories，
-// 減少後端不必要的整表重寫。用版本號（而非單純布林值）是為了避免「這次存檔還在飛的時候
-// 使用者又改了一次分類」造成漏送：只有當這次送出的版本號真的被伺服器成功收下，才會前進
-// catsSyncedVersion；送失敗的話版本號不會更新，下一次任何操作觸發的存檔會自動把分類補送一次。
-var catsDirtyVersion=0, catsSyncedVersion=0;
-function touchCats(){ catsDirtyVersion++; }
-function save(){
-  if(S.status!=="ready" || !S.url || !S.pw || S.items===null) return;
-  var includeCats = catsDirtyVersion!==catsSyncedVersion;
-  var body={ items:S.items };
-  if(includeCats) body.categories=catsToRows(S.cats);
-  pending={ body:body, includeCats:includeCats, version:catsDirtyVersion };
-  flush();
-}
 function flush(){
-  if(saving || pending===null) return;
-  var job=pending; pending=null; saving=true;
-  var payload={ items:job.body.items, token:S.pw };
-  if(job.includeCats) payload.categories=job.body.categories;
+  if(syncing || opsQueue.length===0) return;
+  if(S.status!=="ready" || !S.url || !S.pw) return;
+  var job=opsQueue; opsQueue=[]; syncing=true;
   fetch(S.url,{ method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body: JSON.stringify(payload) })
+    body: JSON.stringify({ ops:job, token:S.pw }) })
   .then(function(r){ if(!r.ok) throw new Error("save"); return r.json(); })
-  .then(function(j){
-    if(j && j.ok===false){ var e=new Error(j.error||"save"); e.code=j.error; throw e; }
-    if(job.includeCats) catsSyncedVersion=job.version;
-  })
+  .then(function(j){ if(j && j.ok===false){ var e=new Error(j.error||"save"); e.code=j.error; throw e; } })
   .catch(function(e){
+    // 送失敗就把這批 ops 補回佇列最前面（用 queueOp 重新過一次，保留 fullResync/categoriesSet 的去重規則）
+    var rest=opsQueue; opsQueue=[]; job.concat(rest).forEach(queueOp);
     if(e && e.code==="unauthorized"){ try{ localStorage.removeItem("accessPassword"); }catch(x){} S.pw=""; S.status="auth"; render(); }
     else toast("同步失敗，稍後會再試");
   })
-  .finally(function(){ saving=false; if(pending!==null) flush(); });
+  .finally(function(){ syncing=false; if(opsQueue.length>0) flush(); });
 }
 
 /* ── mutations ─────────────────────────────────────── */
 function item(id){ return (S.items||[]).find(function(i){ return i.id===id; }); }
+function itemFields(it){
+  return { id:it.id, name:it.name, category:it.category, unit:it.unit, threshold:it.threshold,
+    barcode:it.barcode||"", category2:it.category2||"", brand:it.brand||"" };
+}
 function patchItem(id, fn){
   S.items=(S.items||[]).map(function(i){ return i.id===id ? fn(i) : i; });
-  save();
 }
 function addTx(id, tx){
   tx.id=uid(); if(!tx.date) tx.date=nowISO();
   patchItem(id, function(i){ return Object.assign({}, i, { transactions:[tx].concat(i.transactions||[]) }); });
+  queueOp({ op:"txAdd", itemId:id, tx:tx });
+  sync();
 }
 function bump(id, delta){
   var it=item(id); if(!it) return;
@@ -679,7 +684,8 @@ var A = {
     var id=el.getAttribute("data-id"), it=item(id); if(!it) return;
     if(!confirm("確定要刪除「"+it.name+"」嗎？紀錄也會一起移除。")) return;
     S.items=(S.items||[]).filter(function(i){ return i.id!==id; });
-    S.detailId=null; save(); toast("已刪除 "+it.name); render();
+    queueOp({ op:"itemDelete", id:id }); sync();
+    S.detailId=null; toast("已刪除 "+it.name); render();
   },
   toggleBought:function(el){ var id=el.getAttribute("data-id"); S.bought[id]=!S.bought[id]; render(); },
   openBuy:function(el){
@@ -715,8 +721,12 @@ var A = {
     var it={ id:uid(), name:(f.name||"").trim(), brand:(f.brand||"").trim(), category:f.category, category2:f.category2||"",
       unit:f.unit||"個", threshold:Math.max(0, Math.round(num(f.threshold))), barcode:(f.barcode||"").trim(), transactions:tx };
     S.items=(S.items||[]).concat([it]);
-    if(!S.cats[it.category]) { S.cats[it.category]=[]; touchCats(); }
-    S.add=null; save(); toast("已新增 "+it.name); render();
+    var newCat=false;
+    if(!S.cats[it.category]) { S.cats[it.category]=[]; newCat=true; }
+    queueOp({ op:"itemAdd", item:it });
+    if(newCat) queueOp({ op:"categoriesSet", rows:catsToRows(S.cats) });
+    sync();
+    S.add=null; toast("已新增 "+it.name); render();
   },
   addCat1:function(el){ S.add.form.category=el.getAttribute("data-v"); S.add.form.category2=""; render(); },
   addCat2pick:function(el){ var v=el.getAttribute("data-v"); S.add.form.category2 = S.add.form.category2===v?"":v; render(); },
@@ -737,6 +747,7 @@ var A = {
     patchItem(e.id, function(i){ return Object.assign({}, i, { name:e.name.trim(), brand:e.brand.trim(),
       category:e.category, category2:e.category2, unit:e.unit||"個",
       threshold:Math.max(0,Math.round(num(e.threshold))), barcode:(e.barcode||"").trim() }); });
+    queueOp({ op:"itemUpdate", item:itemFields(item(e.id)) }); sync();
     S.edit=null; toast("已儲存"); render();
   },
   txEdit:function(el){
@@ -752,27 +763,33 @@ var A = {
   saveTx:function(){
     var e=S.txEdit, q=Math.max(0, Math.round(num(e.qty)));
     if(q<=0) return toast("數量要大於 0");
+    var updatedTx=null;
     patchItem(e.itemId, function(i){
       return Object.assign({}, i, { transactions:(i.transactions||[]).map(function(t){
         if(t.id!==e.txId) return t;
         var d=e.day ? new Date(e.day+"T12:00:00").toISOString() : t.date;
-        return Object.assign({}, t, { qty:q, date:d, price:num(e.price)||"", channel:e.channel||"", note:e.note||"" });
+        updatedTx=Object.assign({}, t, { qty:q, date:d, price:num(e.price)||"", channel:e.channel||"", note:e.note||"" });
+        return updatedTx;
       }) });
     });
+    if(updatedTx){ queueOp({ op:"txUpdate", itemId:e.itemId, tx:updatedTx }); sync(); }
     S.txEdit=null; toast("已儲存"); render();
   },
   delTx:function(){
     var e=S.txEdit;
     if(!confirm("刪除這筆紀錄？庫存會跟著重算。")) return;
     patchItem(e.itemId, function(i){ return Object.assign({}, i, { transactions:(i.transactions||[]).filter(function(t){ return t.id!==e.txId; }) }); });
+    queueOp({ op:"txDelete", itemId:e.itemId, txId:e.txId }); sync();
     S.txEdit=null; toast("已刪除一筆紀錄"); render();
   },
   addCat:function(){
     var v=prompt("新增分類名稱："); if(!v||!v.trim()) return;
     v=v.trim(); if(!S.cats[v]) S.cats[v]=[];
     if(S.add) S.add.form.category=v;
-    touchCats(); save(); render();
+    queueOp({ op:"categoriesSet", rows:catsToRows(S.cats) }); sync(); render();
   },
+  // 改名會連動更新所有用到這個分類的品項，屬於一次影響多列的批次異動，
+  // 這裡直接用 fullResync（整包 items+categories 的快照）處理，不特別拆成一堆 itemUpdate。
   renameCat:function(el){
     var c=el.getAttribute("data-v"), v=prompt("重新命名為：", c); if(!v||!v.trim()||v.trim()===c) return;
     v=v.trim();
@@ -780,20 +797,23 @@ var A = {
     S.cats[v]=Array.from(new Set((S.cats[v]||[]).concat(subs)));
     S.items=(S.items||[]).map(function(i){ return i.category===c ? Object.assign({},i,{category:v}) : i; });
     if(S.cat===c) S.cat=v;
-    touchCats(); save(); render();
+    queueOp({ op:"fullResync", items:S.items, categories:catsToRows(S.cats) }); sync(); render();
   },
   delCat:function(el){
     var c=el.getAttribute("data-v");
     if(!confirm("刪除分類「"+c+"」？（已使用這個分類的品項資料不受影響）")) return;
-    delete S.cats[c]; if(S.cat===c) S.cat="全部"; touchCats(); save(); render();
+    delete S.cats[c]; if(S.cat===c) S.cat="全部";
+    queueOp({ op:"categoriesSet", rows:catsToRows(S.cats) }); sync(); render();
   },
   addCat2:function(el){
     var c=el.getAttribute("data-v"), v=prompt("在「"+c+"」底下新增子分類："); if(!v||!v.trim()) return;
-    S.cats[c]=Array.from(new Set((S.cats[c]||[]).concat([v.trim()]))); touchCats(); save(); render();
+    S.cats[c]=Array.from(new Set((S.cats[c]||[]).concat([v.trim()])));
+    queueOp({ op:"categoriesSet", rows:catsToRows(S.cats) }); sync(); render();
   },
   delCat2:function(el){
     var c=el.getAttribute("data-v"), s=el.getAttribute("data-v2");
-    S.cats[c]=(S.cats[c]||[]).filter(function(x){ return x!==s; }); touchCats(); save(); render();
+    S.cats[c]=(S.cats[c]||[]).filter(function(x){ return x!==s; });
+    queueOp({ op:"categoriesSet", rows:catsToRows(S.cats) }); sync(); render();
   }
 };
 function act(name, el){ if(A[name]) A[name](el||document.createElement("div")); }
