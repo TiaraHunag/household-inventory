@@ -422,7 +422,7 @@ function buyScreen(){
     var advText;
     if(adv){
       advText = adv.days>0
-        ? "以目前用量估計，約 "+adv.days+" 天後用完（約 "+fmtShort(adv.eta)+"）"
+        ? "以目前用量估計，約 "+fmtShort(adv.eta)+" 用完"
         : "以目前用量估計，已超過預期用完時間（約 "+fmtShort(adv.eta)+"），建議儘快補貨";
     } else {
       advText = q<=0 ? "已經沒有庫存了，建議儘快補貨" : "用量紀錄還不夠，暫時抓不出補貨時間";
