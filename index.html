@@ -187,6 +187,14 @@ function usage(it){
   var left=Math.max(stock(it)-num(it.threshold)+1,0);
   return { per:per, left:Math.round(per*Math.max(stock(it),0)), predict:new Date(last.getTime()+per*left*DAY), n:outs.length };
 }
+// 依照 usage() 算出的平均消耗速度，從「現在」往後推算目前庫存大概還能撐幾天、
+// 大約哪一天會見底（u.left 已經是「per(每個所需天數) × 目前庫存」算出來的天數）。
+// usage() 回傳 null（用量紀錄不足，少於 2 筆「使用」紀錄）時這裡也回傳 null。
+function restockAdvice(it){
+  var u=usage(it);
+  if(!u) return null;
+  return { days:u.left, eta:new Date(Date.now()+u.left*DAY) };
+}
 function costStats(it){
   var ins=(it.transactions||[]).filter(function(t){return t.type==="in"&&num(t.price)>0;});
   if(!ins.length) return null;
@@ -395,12 +403,17 @@ function buyScreen(){
   if(!low.length) return '<div class="head"><div class="h1">採購清單</div></div><div class="scroll"><div class="empty"><span class="num">0</span>目前沒有需要補貨的品項<br>庫存低於警戒值時會自動列在這裡</div></div>';
   low.forEach(function(it){
     var q=stock(it), sug=Math.max(1, num(it.threshold)*2-q), on=!!S.bought[it.id], li=lastIn(it);
+    var adv=restockAdvice(it);
+    var advText = q<=0
+      ? "已經沒有庫存了，建議儘快補貨"
+      : (adv ? "以目前用量估計，約 "+adv.days+" 天後用完（約 "+fmtShort(adv.eta)+"）"
+             : "用量紀錄還不夠，暫時抓不出補貨時間");
     h+='<div class="row low" style="align-items:flex-start">'+
       '<button class="mark'+(on?" on":"")+'" data-act="toggleBought" data-id="'+it.id+'">'+svg("check",17)+'</button>'+
       '<div style="flex:1;min-width:0">'+
         '<div style="font-size:16px;font-weight:700" class="'+(on?"strike":"")+'">'+esc(it.name)+'</div>'+
         '<div style="font-size:12px;color:var(--soft);margin-top:2px">'+esc([it.brand,it.category2,"剩 "+q+" "+(it.unit||"")].filter(Boolean).join("・"))+'</div>'+
-        '<div style="font-size:12px;font-weight:700;color:var(--accent-800);margin-top:4px">建議買 '+sug+' '+esc(it.unit||"")+(li&&li.channel?'・上次在'+esc(li.channel):'')+'</div>'+
+        '<div style="font-size:12px;font-weight:700;color:var(--accent-800);margin-top:4px">'+advText+(li&&li.channel?'・上次在'+esc(li.channel):'')+'</div>'+
       '</div>'+
       '<button class="pb" style="min-height:40px;padding:0 15px;font-size:13px;margin-top:2px" data-act="openBuy" data-id="'+it.id+'" data-q="'+sug+'">記進貨</button>'+
     '</div>';
